@@ -3,7 +3,8 @@ unit dothraki.obd2;
 interface
 uses
   System.Classes, System.Bluetooth.Components, System.Bluetooth,
-  System.SysUtils, System.Variants, System.Math, dothraki.pids;
+  System.SysUtils, System.Variants, System.Math, dothraki.pids,
+  System.Generics.Collections;
 
 type
   TFluxoDados = (TfdEnvio, TfdRecebimento);
@@ -13,18 +14,21 @@ type
 
   TOBD2Code = class
   const
-    SERVICE_01 = '01';
     OBD2_UUID = '{00001101-0000-1000-8000-00805F9B34FB}';
+
+    SERVICE_01 = '01';
+    ENGINE_COOLANT_TEMP = '05';
     ENGINE_SPEED = '0C';
-    AMBIENT_AIR_TEMPERATURE = '46';
-    ODOMETER = 'A6';
-    ACCELERATOR_PEDAL_POSITION_E = '4A';
+    VEHICLE_SPEED = '0D';
+    THROTTLE_POSITION = '11';
     P_COMBUSTIVEL = '23';
-    TIPO_COMBUSTIVEL = '51';
-    COMBUSTIVEL = '5E';
     FUEL_TANK = '2F';
     DISTANCE_PERC = '31';
-    ENGINE_COOLANT_TEMP = '05';
+    AMBIENT_AIR_TEMPERATURE = '46';
+    ACCELERATOR_PEDAL_POSITION_E = '4A';
+    TIPO_COMBUSTIVEL = '51';
+    COMBUSTIVEL = '5E';
+    ODOMETER = 'A6';
 
     PIDS_SUPPORTED_01_20 = '00';
     PIDS_SUPPORTED_21_40 = '20';
@@ -59,6 +63,7 @@ type
     procedure ConfigurarPidsAtivos(pDados: TArray<System.Byte>);
     function IntToBinByte(Value: Byte): string;
     function GetPids(index: string): TPidService;
+    function GetPidList: TObjectDictionary<Integer, TPidService>;
   protected
     destructor Destroy; override;
   public
@@ -70,14 +75,17 @@ type
     function AmbientAirTemperature: Double;
     function Odometer: Double;
     function AcceleratorPedalPositionE: Double;
+    function Velocidade: Double;
+    function AberturaBorboleta: Double;
+    function NivelCombustivel: Double;
     function DISTANCE_PERC: Double;
-    function ENGINE_COOLANT_TEMP: Double;
+    function TemperaturaMotor: Double;
     procedure VerificarPidsHabilitados;
     property OnConnect: TNotifyEvent read FOnConnect write FOnConnect;
     property OnLogEvent: TOnLogEvent read FOnLogEvent write FOnLogEvent;
     property SendDelay: Integer read FSendDelay write FSendDelay;
     property Pids[index: string]: TPidService read GetPids;
-
+    property PidList: TObjectDictionary<Integer,TPidService> read GetPidList;
   end;
 
 
@@ -111,7 +119,7 @@ begin
   end;
 end;
 
-function TOBD2.ENGINE_COOLANT_TEMP: Double;
+function TOBD2.TemperaturaMotor: Double;
 begin
   if not Conectado then
     Exit(0);
@@ -142,6 +150,19 @@ begin
   end;
 end;
 
+function TOBD2.AberturaBorboleta: Double;
+begin
+  if not Conectado then
+    Exit(0);
+
+  var lOBD2Data := ConsultarDados(TOBD2Code.THROTTLE_POSITION);
+
+  if not lOBD2Data.NoData then
+  begin
+    Result := (100/255)*lOBD2Data.A;
+  end;
+end;
+
 function TOBD2.AcceleratorPedalPositionE: Double;
 begin
   if not Conectado then
@@ -166,6 +187,18 @@ begin
   if not lOBD2Data.NoData then
   begin
     Result := (lOBD2Data.A-40);
+  end;
+end;
+
+function TOBD2.Velocidade: Double;
+begin
+  if not Conectado then
+    Exit(0);
+  var lOBD2Data := ConsultarDados(TOBD2Code.VEHICLE_SPEED);
+
+  if not lOBD2Data.NoData then
+  begin
+    Result := (lOBD2Data.A);
   end;
 end;
 
@@ -216,7 +249,7 @@ constructor TOBD2.Create(AOwner: TComponent);
 begin
   FBluetooth := TBluetooth.Create(Self);
   FBluetooth.Enabled := True;
-  FSendDelay := 200;
+  FSendDelay := 500;
   FPids := TObd2Pids.Create;
 end;
 
@@ -255,14 +288,14 @@ begin
   lRetorno := TStringList.Create;
   try
     lRetorno.Text := TEncoding.ASCII.GetString(pDados);
-    lDados := lRetorno[0];
+    lDados := lRetorno[1];
 
-    if pos('NO DATA',lDados) <> 0 then
+    if pos('NO DA',lDados) <> 0 then
     begin
       Exit;
     end;
 
-    if pos('NO DATA',lDados) = 0 then
+    if pos('NO DA',lDados) = 0 then
     begin
       Result.NoData := False;
       if Length(lDados)>=6 then
@@ -296,31 +329,19 @@ begin
   end;
 end;
 
-{
-procedure TOBD2.Button1Click;
-var
-  lValor: byte;
-  lCodigo, lResultado: string;
-  li: integer;
-begin
-  lCodigo := edtTexto.Text;
-  lResultado := '';
-  for li := 1 to Length(lCodigo) do
-  begin
-    if trim(lCodigo[li]) <> '' then
-    begin
-      lValor:= StrToInt('$'+lCodigo[li]);
-      lResultado := lResultado+IntToBinByte(lValor);
-    end;
-  end;
 
-  for li := 1 to Length(lResultado) do
+function TOBD2.NivelCombustivel: Double;
+begin
+  if not Conectado then
+    Exit(0);
+
+  var lOBD2Data := ConsultarDados(TOBD2Code.ACCELERATOR_PEDAL_POSITION_E);
+
+  if not lOBD2Data.NoData then
   begin
-    if lResultado[li] = '1' then
-      Memo1.Lines.Add(IntToHex(li,2)+':'+lResultado[li]);
+    Result := (100/255)*lOBD2Data.A;
   end;
 end;
-}
 
 procedure TOBD2.ConfigurarPidsAtivos(pDados:TArray<System.Byte>);
 var
@@ -410,9 +431,9 @@ begin
       if FSocket <> nil then
       begin
         FSocket.Connect;
-        EnviarDados('ATH0');
-        ReceberDados;
         EnviarDados('ATSO');
+        ReceberDados;
+        EnviarDados('ATH0');
         ReceberDados;
         if (Assigned(FOnConnect)) then
           FOnConnect(self);
@@ -441,6 +462,11 @@ begin
   result := RetornoOk(lDadosRecebidos);
 end;
 
+
+function TOBD2.GetPidList: TObjectDictionary<Integer, TPidService>;
+begin
+  Result := FPids.List;
+end;
 
 function TOBD2.GetPids(index: string): TPidService;
 begin
